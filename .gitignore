@@ -10,3 +10,8 @@
 Makefile
 depend
 zarith_version.ml
+_opam/
+caml_gobz.c
+compile_flags.txt
+gobz_version.ml
+gobz.ml

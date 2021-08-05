@@ -65,7 +65,7 @@ val one: t
 val minus_one: t
 (** The number -1. *)
 
-external of_int: int -> t = "%identity"
+val of_int: int -> t
 (** Converts from a base integer. *)
 
 external of_int32: int32 -> t = "ml_z_of_int32"

@@ -20,6 +20,12 @@ type t
 
 exception Overflow
 
+(* Redefine [max_int] and [min_int] to adhere to the limits of a double-precision floating-point number *)
+let max_int = (1 lsl 51) - 1
+let min_int = -(1 lsl 51)
+
+let fits_double x = x >= min_int && x <= max_int
+
 external init: unit -> unit = "ml_z_init"
 let _ = init ()
 
@@ -27,7 +33,11 @@ let _ = Callback.register_exception "ml_z_overflow" Overflow
 
 external is_small_int: t -> bool = "%obj_is_int"
 external unsafe_to_int: t -> int = "%identity"
-external of_int: int -> t = "%identity"
+external unsafe_of_int: int -> t = "%identity"
+
+external c_of_int: int -> t = "ml_z_of_int"
+
+let of_int x = if fits_double x then unsafe_of_int x else c_of_int x
 
 external c_neg: t -> t = "ml_z_neg"
 
@@ -37,29 +47,10 @@ let neg x =
   else c_neg x
 
 external c_add: t -> t -> t = "ml_z_add"
-
-let add x y =
-  if is_small_int x && is_small_int y then begin
-    let z = unsafe_to_int x + unsafe_to_int y in
-    (* Overflow check -- Hacker's Delight, section 2.12 *)
-    if (z lxor unsafe_to_int x) land (z lxor unsafe_to_int y) >= 0 
-    then of_int z
-    else c_add x y
-  end else
-    c_add x y
+let add x y = c_add x y
 
 external c_sub: t -> t -> t = "ml_z_sub"
-
-let sub x y =
-  if is_small_int x && is_small_int y then begin
-    let z = unsafe_to_int x - unsafe_to_int y in
-    (* Overflow check -- Hacker's Delight, section 2.12 *)
-    if (unsafe_to_int x lxor unsafe_to_int y)
-       land (z lxor unsafe_to_int x) >= 0 
-    then of_int z
-    else c_sub x y
-  end else
-    c_sub x y
+let sub x y = c_sub x y
 
 external mul_overflows: int -> int -> bool = "ml_z_mul_overflows" [@@noalloc]
 external c_mul: t -> t -> t = "ml_z_mul"

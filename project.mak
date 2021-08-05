@@ -82,6 +82,18 @@ zarith.cmxs: zarith.cmxa libzarith.$(LIBSUFFIX)
 libzarith.$(LIBSUFFIX): $(CSRC:%.c=%.$(OBJSUFFIX))
 	$(OCAMLMKLIB) -failsafe -o zarith $+ $(LIBS)
 
+gobzarith.cma: gobz_version.cmo gobz.cmo
+	$(OCAMLMKLIB) -failsafe -o gobzarith $+ $(LIBS)
+
+gobzarith.cmxa: gobz_version.cmx gobz.cmx
+	$(OCAMLMKLIB) -failsafe -o gobzarith $+ $(LIBS)
+
+gobzarith.cmxs: gobzarith.cmxa libgobzarith.$(LIBSUFFIX)
+	$(OCAMLOPT) -shared -o $@ -I . gobzarith.cmxa -linkall
+
+libgobzarith.$(LIBSUFFIX): caml_gobz.$(OBJSUFFIX)
+	$(OCAMLMKLIB) -failsafe -o gobzarith $+ $(LIBS)
+
 zarith_top.cma: zarith_top.cmo
 	$(OCAMLC) -o $@ -a $<
 
@@ -140,8 +152,21 @@ endif
 %.$(OBJSUFFIX): %.c
 	$(OCAMLC) -ccopt "$(CFLAGS)" -c $<
 
+gobz.ml: z.ml
+	cp $< $@
+	sed -i 's/ml_z/ml_gobz/g' $@
+	sed -i 's/Zarith_version/Gobz_version/g' $@
+
+gobz_version.ml: zarith_version.ml
+	cp $< $@
+
+caml_gobz.c: caml_z.c
+	cp $< $@
+	sed -i 's/ml_z/ml_gobz/g' $@
+	sed -i 's/"_z"/"_gobz"/g' $@
+
 clean:
-	/bin/rm -rf *.$(OBJSUFFIX) *.$(LIBSUFFIX) *.$(DLLSUFFIX) *.cmi *.cmo *.cmx *.cmxa *.cmxs *.cma  *.cmt *.cmti *~ \#* depend test $(AUTOGEN) tmp.c depend
+	/bin/rm -rf *.$(OBJSUFFIX) *.$(LIBSUFFIX) *.$(DLLSUFFIX) *.cmi *.cmo *.cmx *.cmxa *.cmxs *.cma  *.cmt *.cmti *~ \#* depend test $(AUTOGEN) tmp.c depend gobz.ml gobz_version.ml caml_gobz.c
 	make -C tests clean
 
 depend: $(AUTOGEN)

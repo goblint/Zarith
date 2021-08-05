@@ -152,8 +152,8 @@ extern "C" {
 
 /* bounds of an Ocaml int */
 #ifdef ARCH_SIXTYFOUR
-#define Z_MAX_INT       0x3fffffffffffffff
-#define Z_MIN_INT     (-0x4000000000000000)
+#define Z_MAX_INT       0x7ffffffffffff
+#define Z_MIN_INT     (-0x8000000000000)
 #else
 #define Z_MAX_INT       0x3fffffff
 #define Z_MIN_INT     (-0x40000000)
@@ -163,13 +163,8 @@ extern "C" {
 /* Z_MAX_INT may not be representable exactly as a double => we use a
    lower approximation to be safe
  */
-#ifdef ARCH_SIXTYFOUR
-#define Z_MAX_INT_FL    0x3ffffffffffff000
-#define Z_MIN_INT_FL    (-Z_MAX_INT_FL)
-#else
 #define Z_MAX_INT_FL    Z_MAX_INT
 #define Z_MIN_INT_FL    Z_MIN_INT
-#endif
 
 /* safe bounds to avoid overflow in multiplication */
 #ifdef ARCH_SIXTYFOUR
@@ -196,10 +191,10 @@ extern "C" {
    32.
 */
 #ifdef ARCH_SIXTYFOUR
-#define Z_BASE16_LENGTH_OP 15
-#define Z_BASE10_LENGTH_OP 18
-#define Z_BASE8_LENGTH_OP 20
-#define Z_BASE2_LENGTH_OP 62
+#define Z_BASE16_LENGTH_OP 12
+#define Z_BASE10_LENGTH_OP 15
+#define Z_BASE8_LENGTH_OP 17
+#define Z_BASE2_LENGTH_OP 51
 #else
 #define Z_BASE16_LENGTH_OP 7
 #define Z_BASE10_LENGTH_OP 9
@@ -440,10 +435,6 @@ static void ml_z_raise_overflow()
 
 CAMLprim value ml_z_of_int(value v)
 {
-#if Z_USE_NATINT
-  Z_MARK_OP;
-  return v;
-#else
   intnat x;
   value r;
   Z_MARK_OP;
@@ -455,7 +446,6 @@ CAMLprim value ml_z_of_int(value v)
   else Z_HEAD(r) = 0;
   Z_CHECK(r);
   return r;
-#endif
 }
 
 CAMLprim value ml_z_of_nativeint(value v)
@@ -554,7 +544,9 @@ CAMLprim value ml_z_of_float(value v)
   if (exp <= 52) {
     m >>= 52-exp;
 #ifdef ARCH_SIXTYFOUR
-    r = Val_long((x >= 0.) ? m : -m);
+    r = ml_z_alloc(1);
+    Z_LIMB(r)[0] = m;
+    r = ml_z_reduce(r, 1, (x >= 0.) ? 0 : Z_SIGN_MASK);
 #else
     r = ml_z_alloc(2);
     Z_LIMB(r)[0] = m;
@@ -1405,7 +1397,7 @@ CAMLprim value ml_z_add(value arg1, value arg2)
 {
   Z_MARK_OP;
   Z_CHECK(arg1); Z_CHECK(arg2);
-#if Z_FAST_PATH && !Z_FAST_PATH_IN_OCAML
+#if Z_FAST_PATH
   if (Is_long(arg1) && Is_long(arg2)) {
     /* fast path */
     intnat a1 = Long_val(arg1);
@@ -1423,7 +1415,7 @@ CAMLprim value ml_z_sub(value arg1, value arg2)
 {
   Z_MARK_OP;
   Z_CHECK(arg1); Z_CHECK(arg2);
-#if Z_FAST_PATH && !Z_FAST_PATH_IN_OCAML
+#if Z_FAST_PATH
   if (Is_long(arg1) && Is_long(arg2)) {
     /* fast path */
     intnat a1 = Long_val(arg1);
@@ -1441,7 +1433,7 @@ CAMLprim value ml_z_mul_overflows(value vx, value vy)
 {
 #if HAS_BUILTIN(__builtin_mul_overflow) || __GNUC__ >= 5
   intnat z;
-  return Val_bool(__builtin_mul_overflow(vx - 1, vy >> 1, &z));
+  return Val_bool(__builtin_mul_overflow(vx - 1, vy >> 1, &z) || !Z_FITS_INT(z));
 #elif defined(__GNUC__) && defined(__x86_64__)
   intnat z;
   unsigned char o;
