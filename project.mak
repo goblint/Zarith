@@ -70,6 +70,9 @@ all: $(TOBUILD)
 tests:
 	make -C tests test
 
+qcheck: gobzarith.cmxa libgobzarith.$(LIBSUFFIX)
+	make -C tests qcheck
+
 zarith.cma: $(MLSRC:%.ml=%.cmo)
 	$(OCAMLMKLIB) -failsafe -o zarith $+ $(LIBS)
 

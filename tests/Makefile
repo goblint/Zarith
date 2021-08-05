@@ -42,9 +42,15 @@ bench:: timings.exe
 bench:: pi.exe
 	@echo "Benchmarking pi"; time ./pi.exe 10000 > /dev/null
 
+qcheck: qcheck.exe
+	./qcheck.exe
+
 tofloat.exe: tofloat.ml setround.o ../zarith.cmxa
 	ocamlopt -I .. -ccopt "-L.." zarith.cmxa -o tofloat.exe \
            setround.o tofloat.ml
+
+qcheck.exe: qcheck.ml ../gobzarith.cmxa
+	ocamlfind opt -I .. -ccopt "-L.." gobzarith.cmxa -package qcheck -package zarith -o qcheck.exe qcheck.ml -linkpkg
 
 %.exe: %.ml ../zarith.cmxa
 	ocamlopt -I .. -ccopt "-L.." zarith.cmxa $(NUMS_CMXA) -o $*.exe $*.ml
