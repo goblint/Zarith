@@ -1,0 +1,272 @@
+\documentclass{scrartcl}
+
+\usepackage[utf8]{inputenc}
+\usepackage{minted}
+\usepackage{hyperref}
+
+\title{goblint-zarith}
+\subtitle{A fork of Zarith that is more compatible with Js\_of\_ocaml}
+\author{Cakirer, Kerem}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+
+This document aims to explain why I maintain a fork of Zarith for the Goblint project and the changes I've made to Zarith. Hopefully, it will aid in further maintenance of this fork in case I stop working on Gobview.
+
+\subsection{Rationale}
+
+For someone who has a C or Java background, integers in both OCaml and JavaScript have unintuitive behavior. In OCaml, complex objects tend to get allocated on the heap, and a variable is usually nothing more than a pointer. Since "int" is one of the most frequently used types, OCaml employs a trick to avoid the heap allocation of "int"s. It reserves the least significant bit of an "int" as a tag. This optimization works because, thanks to alignment requirements on most architectures, the LSB of a pointer is always zero. As a result, the OCaml runtime can check this bit to differentiate between pointers to heap-allocated objects and "int"s (which have "1" as the LSB). However, as a side effect, OCaml "int"s are 31-bit and 63-bit on 32-bit and 64-bit systems, respectively.
+
+JavaScript integers are also unintuitive in a unique way: They do not exist. All numeric values in JavaScript are IEEE 754 double-precision floating-point numbers. This quirk practically limits the width of an "integer" in JavaScript to 53-bits. Js\_of\_ocaml imposes a further restriction on integer sizes by pretending to be a 32-bit system.
+
+Goblint uses Zarith to represent arbitrary-precision integers. Behind the scenes, Zarith uses the GNU MP library to represent big integers. However, just like OCaml, Zarith implements a tagging system to optimize smaller integers. Zarith uses the native OCaml "int" to store all integers that fit in an "int" and checks the LSB to differentiate between small and big integers. At runtime, it will dynamically switch between the two representations as necessary.
+
+Since GMP and most of Zarith are in C, they don't work in a web browser. The "zarith\_stubs\_js" package reimplements the native parts of Zarith in JavaScript to overcome this limitation. This solution works provided that the two worlds do not cross. However, Gobview aims to reuse the serialized state of the native Goblint in the browser, and, as a result, this limitation becomes an issue. The problem is that regular OCaml "int"s and (small) Zarith integers are only distinct during compile-time. The OCaml runtime cannot distinguish between "int"s and small Zarith integers since they share the same format. As a result, the OCaml runtime will serialize a small Zarith integer the same way it would serialize an actual "int". Unfortunately, because Js\_of\_ocaml emulates a 32-bit system, Js\_of\_ocaml will refuse to deserialize some "small" integers (e.g., anything equal to or larger than $2^{30}$).
+
+\section{Solutions}
+
+\subsection{Disabling optimizations}
+
+This solution is the easiest and the least intrusive to implement. The idea behind it is simple: We disable the small "int" optimization and allocate integers on the heap with GMP, no matter what size they are. Unfortunately, this has a non-negligible impact on performance. (see Table \ref{tab:bench}) Therefore, it makes sense to at least try out other alternatives, but it is always possible to fall back onto this solution if the others don't pan out or become too difficult to maintain in the future.
+
+\begin{table}[h!]
+    \centering
+    \begin{tabular}{cc|cc|c}
+        \hline
+        Program & LoC & With opt. & Without opt. & Impact \\
+        \hline
+        401.bzip2 & 8090 & 21.58 s & 23.10 s & 7\% \\
+        429.mcf & 1608 & 1.33 s & 1.37 s & 3\% \\
+        433.milc & 12274 & 46.44 s s & 48.84 s & 5\% \\
+        456.hmmer & 33776 & 50.04 s & 53.07 s & 6\% \\
+        figlet-2.2.5 & 7902 & 15.36 s & 16.40 s & 7\% \\
+        maradns-1.4.06\_zoneserver & 32034 & 95.97 s & 104.86 s & 9\% \\
+        \hline
+    \end{tabular}
+    \caption{Benchmarking single-threaded programs. See Appendix \ref{sec:bench} for more details.}
+    \label{tab:bench}
+\end{table}
+
+\subsection{Patching Js\_of\_ocaml}
+
+Yet another solution is to fork Js\_of\_ocaml to use "BigInt"s instead of floating-point numbers for "int"s. It would be possible to accomplish this by patching the code generation module of Js\_of\_ocaml and some of the primitive functions defined as part of the runtime. The main advantage of this solution is that Goblint itself needs absolutely no modifications for it to work. Unfortunately, the disadvantages dominate. First of all, Js\_of\_ocaml is a much more complicated project than Zarith, and a fork of it is likely to incur higher maintenance costs. In addition, the decision to represent "int"s as floating-point numbers is not a minor implementation detail, and some libraries like zarith\_stubs\_js implicitly depend on it. As a result, forking the Js\_of\_ocaml compiler is not enough on its own, which makes this solution too costly.
+
+\subsection{Partially disabling optimizations}
+
+Partially disabling optimizations is the solution I've decided to implement. To summarize, I patch the native version of Zarith to use a more restricted range for what it considers to be small integers and make it heap allocate for integers that wouldn't fit in this range.
+
+The first idea I had was to make Zarith emulate a 32-bit system, even on 64-bit systems. This idea did not pan out because the performance was still too similar to the version without the small integer optimization. (see Table \ref{tab:benchopt}) It is not clear why this is the case, but I suspect "INT\_MIN" \& "INT\_MAX" to be the main culprits. These two values occur in cases where the static analysis fails to yield a meaningful approximation, and they will not fit in a 31-bit integer that a 32-bit build of Zarith would use.
+
+The real solution is a bit more involved. Instead of emulating a 32-bit system, we emulate 53-bits. This way, we end up with a performance profile that matches the native version, (see Table \ref{tab:benchopt} and \ref{tab:benchtraces}) and everything still works in the browser. Because Js\_of\_ocaml considers such integers to be too large to deserialize, this change requires a patch on the Js\_of\_ocaml side as well. However, it is possible to override Js\_of\_ocaml primitives without forking the project, so this does not pose a significant challenge.
+
+\begin{table}[h!]
+    \centering
+    \begin{tabular}{c|cccc}
+        \hline
+        Program & Native & 53-bit & 32-bit & Without opt. \\
+        \hline
+        401.bzip2 & 21.58 s & 21.52 s & 22.86 s & 23.10 s \\
+        429.mcf & 1.33 s & 1.33 s & 1.36 s & 1.37 s \\
+        433.milc & 46.44 s & 46.57 s & 48.08 s & 48.84 s \\
+        456.hmmer & 50.04 s & 50.23 s & 51.53 s & 53.07 s \\
+        figlet-2.2.5 & 15.36 s & 15.47 s & 16.24 s & 16.40 s \\
+        maradns-1.4.06\_zoneserver & 95.97 s & 96.04 s & 102.91 s & 104.86 s \\
+        \hline
+    \end{tabular}
+    \caption{Benchmarking single-threaded programs. See Appendix \ref{sec:bench} for more details.}
+    \label{tab:benchopt}
+\end{table}
+
+\begin{table}[h!]
+    \centering
+    \begin{tabular}{cc|cc}
+        \hline
+        Program & Privatization & Native & 53-bit \\
+        \hline
+        ypbind & lock & 19.33 s & 19.39 s \\
+        ypbind & write & 22.69 s & 22.83 s \\
+        ypbind & write+lock & 25.82 s & 25.87 s \\
+        marvell1 & lock & 33.09 s & 33.11 s \\
+        marvell1 & write & 45.58 s & 45.30 s \\
+        marvell1 & write+lock & 53.37 s & 53.36 s \\
+        \hline
+    \end{tabular}
+    \caption{Benchmarking the tracing feature of Goblint. See Appendix \ref{sec:bench} for more details.}
+    \label{tab:benchtraces}
+\end{table}
+
+I prefer this solution because the Zarith codebase is small and clean enough, and its invariants are easy to keep in consideration. Also, it is possible to use QCheck to compare the patched version of Zarith with the original implementation as an additional step to ensure correctness, something that is hard to accomplish with a patched version of Js\_of\_ocaml.
+
+\section{Implementation}
+
+\subsection{Assumptions \& Constraints}
+
+Zarith helpfully lists its program invariants in "caml\_z.c." (see Listing \ref{lst:invariants}) The first one ("if the number fits in an int, it is stored in an int, not a block") is important because Zarith consequently assumes that two different representations ("int" and block) can never have the same value. "equal", in particular, depends on this and will break (i.e., return false even if the parameters are equal) when this invariant gets violated. (see Listing \ref{lst:equal}) As a result, the patches to Zarith mustn't cause any inconsistency in this regard.
+
+\begin{listing}[ht]
+\inputminted[linenos, firstline=120, lastline=131]{c}{caml_z.c}
+\caption{Zarith's invariants}
+\label{lst:invariants}
+\end{listing}
+
+\begin{listing}[ht]
+\inputminted[linenos, firstline=1116, lastline=1124]{c}{caml_z.c}
+\caption{The first few lines of "ml\_z\_equal".}
+\label{lst:equal}
+\end{listing}
+
+In addition to this, we also have our own assumptions. For the patches, we assume the host system is 64-bit because on a 32-bit system, everything already works as expected, and no patches are necessary. Furthermore, since this fork has to work with "zarith\_stubs\_js", we cannot introduce any new primitives.
+
+\subsection{Constants}
+
+In "caml\_z.c", various constants and macros are defined to avoid code duplication. For example, the "Z\_FITS\_INT" macro uses "Z\_MAX\_INT" and "Z\_MIN\_INT" to see if a native integer would fit in an OCaml "int". (see Listing \ref{lst:maxmin_int}) Since we simulate a 53-bit system, we redefine "Z\_MAX\_INT" as "0x7ffffffffffff" (= $2^{51} - 1$) and "Z\_MIN\_INT" as "-0x8000000000000" (= $-2^{51}$). \footnotemark
+
+\footnotetext{Since floating-point numbers use a sign bit instead of two's complement, we can make the maximum as large as $2^{52}$. I don't, because Zarith might implicitly expect this constant to be defined as $2^{n - 2} - 1$, where "n" is the word size.}
+
+\begin{listing}[ht]
+\inputminted[linenos, firstline=161, lastline=161]{c}{caml_z.c}
+\caption{The definition of "Z\_FITS\_INT"}
+\label{lst:maxmin_int}
+\end{listing}
+
+Note that blindly modifying constants is not always the correct choice. For example, Zarith uses "Z\_HI\_INT" and similarly named constants to check if it can convert its integers back to OCaml integer types. (see Listing \ref{lst:hi_int}) Redefining these wouldn't necessarily break Zarith, but it leads to spurious unit test failures; therefore, it is still beneficial to keep the old behavior.
+
+\begin{listing}[ht]
+\inputminted[linenos, firstline=183, lastline=188]{c}{caml_z.c}
+\caption{Zarith uses these for "to\_int", "to\_int32", etc.}
+\label{lst:hi_int}
+\end{listing}
+
+\subsection{ml\_z\_reduce}
+
+Zarith uses "ml\_z\_reduce" for normalizing "big" integers. While we don't modify this function in any way, it is necessary to understand how it works to ensure the correctness of our patch set.
+
+A "big" integer in Zarith is equivalent to an array of word-size integers (also called "limbs") plus a header part that contains the size of the array as well as the sign of the number. "ml\_z\_reduce" removes any null blocks that appear at the end of the array and readjusts the size if necessary. If no blocks remain at the end of this process, it returns a zero. If only a single block remains, and the value of the block resides in the range [Z\_MIN\_INT, Z\_MAX\_INT], "ml\_z\_reduce" converts it to a "small" integer.
+
+Zarith already uses "ml\_z\_reduce" quite intensively, so most functions don't need any modifications at all. It is mainly the conversion functions that need fixing.
+
+\subsection{of\_int}
+
+Zarith implements "of\_int" as a simple identity transformation. (see Listing \ref{lst:of_int}) We redefine "of\_int" as a proper function, and in cases where the input would fit in a 52-bit integer, we still perform an identity transformation. However, when it doesn't, we use the "ml\_z\_of\_int" function from "caml\_z.c" to create an arbitrary-precision integer.
+
+\begin{listing}[ht]
+\inputminted[linenos, firstline=30, lastline=30]{ocaml}{z.ml}
+\caption{Definition of "of\_int"}
+\label{lst:of_int}
+\end{listing}
+
+Zarith already provides "ml\_z\_of\_int", but we have to disable the "Z\_USE\_NATINT" branch for it to work correctly because otherwise, it will just return the input parameter. (see Listing \ref{lst:ml_z_of_int})
+
+\begin{listing}[ht]
+\inputminted[linenos, firstline=441, lastline=459]{c}{caml_z.c}
+\caption{Definition of "ml\_z\_of\_int". By default, it just returns the input parameter.}
+\label{lst:ml_z_of_int}
+\end{listing}
+
+\subsection{of\_float}
+
+Zarith implements "of\_float" via the "ml\_z\_of\_float" function in C. As it stands, this function has two issues.
+
+The first one is quite simple: "ml\_z\_of\_float" uses "Z\_MAX\_INT\_FL" and "Z\_MIN\_INT\_FL" to decide whether an OCaml "float" fits in an "int", and these constants are too large for our 52-bit integers. (see Listing \ref{lst:ml_z_of_float_fits}) We redefine their values as "Z\_MAX\_INT" and "Z\_MIN\_INT", respectively, because a floating-point number in this range will always fit in a 52-bit integer.
+
+\begin{listing}[ht]
+\inputminted[linenos, firstline=533, lastline=542]{c}{caml_z.c}
+\caption{Snippet from "ml\_z\_of\_float"}
+\label{lst:ml_z_of_float_fits}
+\end{listing}
+
+The other issue here is the 64-bit code branch. (see Listing \ref{lst:ml_z_of_float}) The mantissa of the input may end up being too large for a 52-bit integer, so we have to allocate a large integer, just like in the 32-bit branch. However, in the 64-bit version, we only need a single "limb" because the "limbs" of an GMP integer adhere to the CPU word size. As a result, copying the 32-bit version would end up enlarging the mantissa on 64-bit systems.
+
+\begin{listing}[ht]
+\inputminted[linenos, firstline=550, lastline=563]{c}{caml_z.c}
+\caption{Another snippet from "ml\_z\_of\_float". Notice how the 32-bit version splits the mantissa and stores each part in a separate limb.}
+\label{lst:ml_z_of_float}
+\end{listing}
+
+\subsection{of\_substring\_base}
+
+"of\_substring\_base" creates a Zarith integer from a (sub)string. Functions like "of\_string", "of\_substring", and "of\_string\_base" all use "of\_substring\_base" underneath. Internally, this function uses the "Z\_BASEXX\_LENGTH\_OP" family of constants to decide whether the input will fit in a native integer. Luckily, the comments explain how the values of the constants were selected, so we can easily repeat the same process to redefine them. (see Listing \ref{lst:z_basexx_length_op})
+
+\begin{listing}[ht]
+\inputminted[linenos, firstline=194, lastline=202]{c}{caml_z.c}
+\caption{Definition of "Z\_BASEXX\_LENGTH\_OP" constants.}
+\label{lst:z_basexx_length_op}
+\end{listing}
+
+\subsection{succ, pred, abs \& neg}
+
+These functions all use either "min\_int" or "max\_int" to do a boundary check on the input and decide how to proceed. (see Listing \ref{lst:succ}) As a result, they sometimes create "int"s that do not fit in a 52-bit integer. The solution is to redefine "min\_int" and "max\_int."
+
+\begin{listing}[ht]
+\inputminted[linenos, firstline=119, lastline=122]{ocaml}{z.ml}
+\caption{Definition of "succ". The others look similar.}
+\label{lst:succ}
+\end{listing}
+
+\subsection{add \& sub}
+
+For these operations, unless an input parameter is not a small integer, Zarith first computes the result and then performs some bit-level hackery to check whether it has overflowed or not. (see Listing \ref{lst:add}) As expected, this doesn't work as intended in our case. As expected, this doesn't work as intended in our case. To avoid this issue, we patch "add" and "sub" to always call "c\_add" and "c\_sub", respectively. Additionally, since we call the C primitives directly now, we have to modify them to do "fast path" checks. (see Listing \ref{lst:ml_z_add})
+
+\begin{listing}[ht]
+\inputminted[linenos, firstline=41, lastline=49]{ocaml}{z.ml}
+\caption{Definition of "add". "c\_add" is a binding for "ml\_z\_add".}
+\label{lst:add}
+\end{listing}
+
+\begin{listing}[ht]
+\inputminted[linenos, firstline=1404, lastline=1414]{c}{caml_z.c}
+\caption{Partial definition of "ml\_z\_add". By default, "Z\_FAST\_PATH\_IN\_OCAML" is true, and the "fast path" is disabled.}
+\label{lst:ml_z_add}
+\end{listing}
+
+\subsection{mul}
+
+For small inputs, "mul" uses the C function "ml\_z\_mul\_overflows" to detect overflows. (see Listing \ref{lst:mul}) The OCaml part of "mul" itself doesn't need any modifications; however, the helper function "ml\_z\_mul\_overflows" must be corrected to use "Z\_FITS\_INT".
+
+\begin{listing}[ht]
+\inputminted[linenos, firstline=67, lastline=71]{ocaml}{z.ml}
+\caption{Definition of "mul"}
+\label{lst:mul}
+\end{listing}
+
+An additional challenge here is that "ml\_z\_mul\_overflows" provides multiple implementations of the same functionality for cross-platform portability. (see Listing \ref{lst:ml_z_mul_overflows}) For now, I only fix the first code path because it uses the GCC/Clang intrinsic "\_\_builtin\_mul\_overflow" and already covers all the platforms we actively use/target.
+
+\begin{listing}[ht]
+\inputminted[linenos, firstline=1440, lastline=1470]{c}{caml_z.c}
+\caption{Definition of "ml\_z\_mul\_overflows"}
+\label{lst:ml_z_mul_overflows}
+\end{listing}
+
+\section{Distribution}
+
+Yet another issue is how we distribute this fork of Zarith and integrate it with Goblint. Although my patches don't have a significant impact on performance, there might be undiscovered correctness issues. Therefore, I tried to find a solution that satisfies the following criteria:
+
+\begin{itemize}
+    \item Goblint should ideally only use this fork when the user also wishes to build Gobview.
+    \item There shouldn't be any complex changes in Goblint itself.
+    \item It should be hard to create a misconfigured build of Goblint. (Unpatched Zarith + Gobview)
+\end{itemize}
+
+The first solution that comes to mind is to provide our fork of Zarith as a separate package (e.g., "gobzarith"), create a wrapper module for Zarith, and use the "alternative dependencies" feature of Dune to select the correct implementation of Zarith. Unfortunately, this doesn't work because we also want any dependencies of Goblint to use our fork.
+
+To avoid a scenario where the dependencies of Goblint and Goblint itself use different versions of Zarith, we pretty much have to use pinned packages. However, pinning has its own set of shortcomings. Opam supports conditional dependencies, but it has no notion of "conditional pinnings." As a result, the user has to manage the pin for Zarith manually. They have to remember to remove it if they don't need Gobview and add it back if they change their mind.
+
+To avoid the aforementioned issues, I decided to handle these details in the forked package itself. Instead of modifying Zarith's source files directly, I develop the patchset in a separate branch and distribute them as a patch file in a release branch. Then, if Js\_of\_ocaml appears to be installed on the system, Opam applies these changes before the build process. Otherwise, the original version is built. I also made Js\_of\_ocaml an optional dependency of Zarith to trigger a rebuild of Zarith and its dependents, even if the user installs Js\_of\_ocaml at a later point. This solution satisfies my criteria and is transparent to Goblint.
+
+\section{Testing}
+
+Finally, we have to consider testing. Zarith already provides a reasonably robust test suite of well-known edge cases, but since we modify Zarith in a rather unorthodox way, it might miss some issues. Ideally, it would be possible to generate random input data and compare the output of the patched version with the original. However, the way we modify and distribute Zarith makes it impossible for these two versions to coexist. As a result, in my development branch, I created the alternative build targets "gobzarith.cmxa" and "libgobzarith.a". These will rename modules and primitive functions to avoid symbol clashes, making it possible to test the different implementations of Zarith with QCheck.
+
+\appendix
+
+\section{Benchmarks}
+\label{sec:bench}
+
+The benchmarks were performed on a server with an Intel Xeon E3-1270 v3 CPU and 32 GBs of RAM running Ubuntu 18.04. All dependencies of Goblint (with the exception of Zarith) were locked to the versions specified in the file "goblint.opam.locked" from commit "85536ab5" of the "goblint/analyzer" repository. Since I forked Zarith off the release 1.12, all builds of Goblint (including the "unmodified" ones) use this release for reasons of fairness.
+
+Two separate benchmarks were performed. The goal of the first benchmark was to determine the impact each possible patch to Zarith had on performance. For this benchmark, I used the single-threaded program group. (see "index/single-thread.txt" in "goblint/bench") The second benchmark was done to ensure that the "winner" of the previous benchmark doesn't misbehave in other cases. For this reason, I only compared two different builds of Goblint (i.e., with unmodified Zarith \& with the 53-bit version of Zarith). Since I used the tracing tests (see "index/traces.txt" in "goblint/bench") for this benchmark, Goblint was updated to "3690e97b," but its dependencies were left untouched.
+
+\end{document}
