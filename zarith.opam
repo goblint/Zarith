@@ -9,6 +9,7 @@ authors: [
 homepage: "https://github.com/ocaml/Zarith"
 bug-reports: "https://github.com/ocaml/Zarith/issues"
 dev-repo: "git+https://github.com/ocaml/Zarith.git"
+patches: ["goblint.patch" {(arch = "x86_64" | arch = "arm64") & js_of_ocaml:installed}]
 build: [
   ["./configure"] {os != "openbsd" & os != "freebsd" & os != "macos"}
   [
@@ -31,6 +32,7 @@ depends: [
   "ocamlfind"
   "conf-gmp"
 ]
+depopts: ["js_of_ocaml"]
 synopsis:
   "Implements arithmetic and logical operations over arbitrary-precision integers"
 description: """
